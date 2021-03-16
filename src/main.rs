@@ -1,3 +1,6 @@
+#[cfg(test)]
+use rstest_reuse;
+
 use crate::core::{Direction, Game};
 use ncurses as nc;
 

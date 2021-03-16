@@ -5,6 +5,9 @@ use rand::{
     Rng,
 };
 
+#[cfg(test)]
+use rstest_reuse::{self, apply, template};
+
 pub const PLAYGROUND_WIDTH: i32 = 10;
 pub const PLAYGROUND_HEIGHT: i32 = 16;
 
@@ -88,7 +91,7 @@ impl Game {
 
 pub type Grid = [[Block; PLAYGROUND_WIDTH as usize]; PLAYGROUND_HEIGHT as usize];
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Block {
     pub value: u8,
     pub color: Option<Color>,
@@ -196,15 +199,17 @@ impl Tetromino {
             for (colidx, column) in row.into_iter().enumerate() {
                 if column != 0 {
                     let Coord { y, x } = self.topleft;
-                    if !(0..PLAYGROUND_WIDTH).contains(&(colidx as i32 + x)) {
+                    let next_step = Coord {
+                        y: rowidx as i32 + y,
+                        x: colidx as i32 + x,
+                    };
+                    if !(0..PLAYGROUND_WIDTH).contains(&next_step.x) {
                         return Err("Out of bounds.");
                     }
-                    if rowidx as i32 + y >= PLAYGROUND_HEIGHT {
+                    if next_step.y >= PLAYGROUND_HEIGHT {
                         return Err("Out of bounds.");
                     }
-                    let surroundings_y = (rowidx as i32 + y) as usize;
-                    let surroundings_x = (colidx as i32 + x) as usize;
-                    if self.grid[surroundings_y][surroundings_x].value != 0 {
+                    if self.grid[next_step.y as usize][next_step.x as usize].value != 0 {
                         return Err("Collision.");
                     }
                 }
@@ -215,6 +220,7 @@ impl Tetromino {
     }
 }
 
+#[derive(PartialEq)]
 pub enum Shape {
     O,
     I,
@@ -285,4 +291,383 @@ pub enum Direction {
 pub struct Coord {
     pub y: i32,
     pub x: i32,
+}
+
+#[cfg(test)]
+mod game_tests {
+    use super::*;
+
+    #[test]
+    fn create_grid() {
+        let grid = Game::create_grid();
+        assert_eq!(grid.len(), PLAYGROUND_HEIGHT as usize);
+        for i in 0..PLAYGROUND_HEIGHT {
+            assert_eq!(grid[i as usize].len(), PLAYGROUND_WIDTH as usize);
+        }
+    }
+
+    #[test]
+    fn create_empty_row() {
+        let row = Game::create_empty_row();
+        assert_eq!(row.len(), PLAYGROUND_WIDTH as usize);
+        for i in 0..PLAYGROUND_WIDTH {
+            assert_eq!(
+                row[i as usize],
+                Block {
+                    value: 0,
+                    color: None
+                }
+            );
+        }
+    }
+}
+
+#[cfg(test)]
+mod tetromino_tests {
+    use super::*;
+    use rstest::*;
+
+    #[fixture]
+    fn tetromino() -> Tetromino {
+        let grid = Game::create_grid();
+        let mut tetromino = Tetromino::new(grid);
+        tetromino.topleft = Coord { y: 5, x: 5 };
+        tetromino
+    }
+
+    #[template]
+    #[rstest(
+        shape,
+        case(Shape::O),
+        case(Shape::I),
+        case(Shape::S),
+        case(Shape::Z),
+        case(Shape::J),
+        case(Shape::L),
+        case(Shape::T)
+    )]
+    fn all_shapes(shape: Shape) {}
+
+    #[apply(all_shapes)]
+    fn move_sideways_left_ok(mut tetromino: Tetromino, shape: Shape) {
+        tetromino.shape = shape;
+        assert_eq!(tetromino.move_sideways(Direction::Left), Ok(()));
+    }
+
+    #[apply(all_shapes)]
+    fn move_sideways_right_ok(mut tetromino: Tetromino, shape: Shape) {
+        tetromino.shape = shape;
+        assert_eq!(tetromino.move_sideways(Direction::Right), Ok(()));
+    }
+
+    #[apply(all_shapes)]
+    fn move_sideways_left_out_of_bounds(mut tetromino: Tetromino, shape: Shape) {
+        tetromino.shape = shape;
+        tetromino.topleft.x = -3;
+        assert_eq!(
+            tetromino.move_sideways(Direction::Left),
+            Err("Out of bounds.")
+        );
+    }
+
+    #[apply(all_shapes)]
+    fn move_sideways_right_out_of_bounds(mut tetromino: Tetromino, shape: Shape) {
+        tetromino.shape = shape;
+        tetromino.topleft.x = PLAYGROUND_WIDTH;
+        assert_eq!(
+            tetromino.move_sideways(Direction::Right),
+            Err("Out of bounds.")
+        );
+    }
+
+    // #[apply(all_shapes)]
+    // fn move_sideways_left_collision() {}
+
+    // #[apply(all_shapes)]
+    // fn move_sideways_right_collision() {}
+
+    #[apply(all_shapes)]
+    fn move_down_no_obstacles(mut tetromino: Tetromino, shape: Shape) {
+        tetromino.shape = shape;
+        tetromino.topleft.y = 0;
+        for _ in 0..5 {
+            assert_eq!(tetromino.move_down(), Ok(()));
+        }
+    }
+
+    #[apply(all_shapes)]
+    fn move_down_out_of_bounds(mut tetromino: Tetromino, shape: Shape) {
+        tetromino.shape = shape;
+        tetromino.topleft.y = PLAYGROUND_HEIGHT;
+        assert_eq!(tetromino.move_down(), Err("Out of bounds."));
+    }
+
+    #[apply(all_shapes)]
+    fn move_down_collision(mut tetromino: Tetromino, shape: Shape) {
+        tetromino.shape = shape;
+        for i in 6..9 {
+            tetromino.grid[i] = [Block::new(1, None); PLAYGROUND_WIDTH as usize];
+        }
+        assert_eq!(tetromino.move_down(), Err("Collision."));
+    }
+
+    #[apply(all_shapes)]
+    fn rotate_left_ok(mut tetromino: Tetromino, shape: Shape) {
+        tetromino.shape = shape;
+        let possible_rotations = tetromino.shape.get_possible_rotations();
+        tetromino.current_rotation = *possible_rotations.last().unwrap();
+        for rotation_number in (0..possible_rotations.len() - 1).rev() {
+            assert_eq!(tetromino.rotate(Direction::Left), Ok(()));
+            assert_eq!(
+                tetromino.current_rotation,
+                possible_rotations[rotation_number]
+            )
+        }
+    }
+
+    #[apply(all_shapes)]
+    fn rotate_right_ok(mut tetromino: Tetromino, shape: Shape) {
+        tetromino.shape = shape;
+        let possible_rotations = tetromino.shape.get_possible_rotations();
+        tetromino.current_rotation = possible_rotations[0];
+
+        for rotation_index in 1..possible_rotations.len() {
+            assert_eq!(tetromino.rotate(Direction::Right), Ok(()));
+            assert_eq!(
+                tetromino.current_rotation,
+                possible_rotations[rotation_index]
+            )
+        }
+    }
+
+    #[apply(all_shapes)]
+    fn rotate_left_out_of_bounds(mut tetromino: Tetromino, shape: Shape) {
+        tetromino.shape = shape;
+        tetromino.topleft.x = -3;
+        let possible_rotations = tetromino.shape.get_possible_rotations();
+
+        for rotation in possible_rotations {
+            tetromino.current_rotation = rotation;
+            assert_eq!(tetromino.rotate(Direction::Left), Err("Out of bounds."));
+            assert_eq!(tetromino.current_rotation, tetromino.current_rotation);
+        }
+    }
+
+    #[apply(all_shapes)]
+    fn rotate_right_out_of_bounds(mut tetromino: Tetromino, shape: Shape) {
+        tetromino.shape = shape;
+        tetromino.topleft.x = PLAYGROUND_WIDTH;
+        let possible_rotations = tetromino.shape.get_possible_rotations();
+
+        for rotation in possible_rotations {
+            tetromino.current_rotation = rotation;
+            assert_eq!(tetromino.rotate(Direction::Right), Err("Out of bounds."));
+            assert_eq!(tetromino.current_rotation, tetromino.current_rotation);
+        }
+    }
+
+    #[apply(all_shapes)]
+    fn rotate_collision_left(mut tetromino: Tetromino, shape: Shape) {
+        tetromino.shape = shape;
+        let possible_rotations = tetromino.shape.get_possible_rotations();
+
+        for i in 6..9 {
+            tetromino.grid[i] = [Block::new(1, None); PLAYGROUND_WIDTH as usize];
+        }
+
+        for rotation in possible_rotations {
+            tetromino.current_rotation = rotation;
+            assert_eq!(tetromino.rotate(Direction::Left), Err("Collision."));
+            assert_eq!(tetromino.current_rotation, tetromino.current_rotation);
+        }
+    }
+
+    #[apply(all_shapes)]
+    fn rotate_collision_right(mut tetromino: Tetromino, shape: Shape) {
+        tetromino.shape = shape;
+        let possible_rotations = tetromino.shape.get_possible_rotations();
+
+        for i in 6..9 {
+            tetromino.grid[i] = [Block::new(1, None); PLAYGROUND_WIDTH as usize];
+        }
+
+        for rotation in possible_rotations {
+            tetromino.current_rotation = rotation;
+            assert_eq!(tetromino.rotate(Direction::Right), Err("Collision."));
+            assert_eq!(tetromino.current_rotation, tetromino.current_rotation);
+        }
+    }
+}
+
+#[cfg(test)]
+mod shape_tests {
+    use super::*;
+    use rstest::rstest;
+
+    #[rstest(
+        shape,
+        color,
+        case(Shape::O, Color::Blue),
+        case(Shape::I, Color::Yellow),
+        case(Shape::S, Color::Cyan),
+        case(Shape::Z, Color::White),
+        case(Shape::J, Color::Magenta),
+        case(Shape::L, Color::Red),
+        case(Shape::T, Color::Green)
+    )]
+    fn get_color(shape: Shape, color: Color) {
+        assert_eq!(shape.get_color(), color);
+    }
+
+    #[rstest(
+        shape, rotations,
+        case(Shape::O, vec![51]),
+        case(Shape::I, vec![8738, 240]),
+        case(Shape::S, vec![54, 561]),
+        case(Shape::Z, vec![99, 306]),
+        case(Shape::J, vec![275, 71, 802, 113]),
+        case(Shape::L, vec![547, 116, 785, 23]),
+        case(Shape::T, vec![114, 305, 39, 562]),
+    )]
+    fn get_possible_rotations(shape: Shape, rotations: Vec<Rotation>) {
+        assert_eq!(shape.get_possible_rotations(), rotations);
+    }
+
+    #[rstest(
+        shape, expected,
+        case(Shape::O, vec![
+            vec![
+                vec![0, 0, 0, 0],
+                vec![0, 0, 0, 0],
+                vec![0, 0, 1, 1],
+                vec![0, 0, 1, 1],
+            ]
+        ]),
+        case(Shape::I, vec![
+            vec![
+                vec![0, 0, 1, 0],
+                vec![0, 0, 1, 0],
+                vec![0, 0, 1, 0],
+                vec![0, 0, 1, 0],
+            ],
+            vec![
+                vec![0, 0, 0, 0],
+                vec![0, 0, 0, 0],
+                vec![1, 1, 1, 1],
+                vec![0, 0, 0, 0],
+            ],
+        ]),
+        case(Shape::S, vec![
+            vec![
+                vec![0, 0, 0, 0],
+                vec![0, 0, 0, 0],
+                vec![0, 0, 1, 1],
+                vec![0, 1, 1, 0],
+            ],
+            vec![
+                vec![0, 0, 0, 0],
+                vec![0, 0, 1, 0],
+                vec![0, 0, 1, 1],
+                vec![0, 0, 0, 1],
+            ],
+        ]),
+        case(Shape::Z, vec![
+            vec![
+                vec![0, 0, 0, 0],
+                vec![0, 0, 0, 0],
+                vec![0, 1, 1, 0],
+                vec![0, 0, 1, 1],
+            ],
+            vec![
+                vec![0, 0, 0, 0],
+                vec![0, 0, 0, 1],
+                vec![0, 0, 1, 1],
+                vec![0, 0, 1, 0],
+            ],
+        ]),
+        case(Shape::J, vec![
+            vec![
+                vec![0, 0, 0, 0],
+                vec![0, 0, 0, 1],
+                vec![0, 0, 0, 1],
+                vec![0, 0, 1, 1],
+            ],
+            vec![
+                vec![0, 0, 0, 0],
+                vec![0, 0, 0, 0],
+                vec![0, 1, 0, 0],
+                vec![0, 1, 1, 1],
+            ],
+            vec![
+                vec![0, 0, 0, 0],
+                vec![0, 0, 1, 1],
+                vec![0, 0, 1, 0],
+                vec![0, 0, 1, 0],
+            ],
+            vec![
+                vec![0, 0, 0, 0],
+                vec![0, 0, 0, 0],
+                vec![0, 1, 1, 1],
+                vec![0, 0, 0, 1],
+            ],
+        ]),
+        case(Shape::L, vec![
+            vec![
+                vec![0, 0, 0, 0],
+                vec![0, 0, 1, 0],
+                vec![0, 0, 1, 0],
+                vec![0, 0, 1, 1],
+            ],
+            vec![
+                vec![0, 0, 0, 0],
+                vec![0, 0, 0, 0],
+                vec![0, 1, 1, 1],
+                vec![0, 1, 0, 0],
+            ],
+            vec![
+                vec![0, 0, 0, 0],
+                vec![0, 0, 1, 1],
+                vec![0, 0, 0, 1],
+                vec![0, 0, 0, 1],
+            ],
+            vec![
+                vec![0, 0, 0, 0],
+                vec![0, 0, 0, 0],
+                vec![0, 0, 0, 1],
+                vec![0, 1, 1, 1],
+            ],
+        ]),
+        case(Shape::T, vec![
+            vec![
+                vec![0, 0, 0, 0],
+                vec![0, 0, 0, 0],
+                vec![0, 1, 1, 1],
+                vec![0, 0, 1, 0],
+            ],
+            vec![
+                vec![0, 0, 0, 0],
+                vec![0, 0, 0, 1],
+                vec![0, 0, 1, 1],
+                vec![0, 0, 0, 1],
+            ],
+            vec![
+                vec![0, 0, 0, 0],
+                vec![0, 0, 0, 0],
+                vec![0, 0, 1, 0],
+                vec![0, 1, 1, 1],
+            ],
+            vec![
+                vec![0, 0, 0, 0],
+                vec![0, 0, 1, 0],
+                vec![0, 0, 1, 1],
+                vec![0, 0, 1, 0],
+            ],
+        ]),
+    )]
+    fn to_vec(shape: Shape, expected: Vec<ShapeVec>) {
+        let possible_rotations = shape.get_possible_rotations();
+        for (exp, possible_rotation) in expected.iter().zip(possible_rotations) {
+            assert_eq!(shape.to_vec(possible_rotation), *exp);
+        }
+    }
 }
